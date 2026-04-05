@@ -15,18 +15,6 @@ export async function GET(
       );
     }
 
-    // Mask song title/artist during play
-    if (state.status === "playing" && state.currentSong) {
-      return NextResponse.json({
-        ...state,
-        currentSong: {
-          ...state.currentSong,
-          title: "???",
-          artist: "???",
-        },
-      });
-    }
-
     return NextResponse.json(state);
   } catch (err) {
     console.error("GET /api/rooms/[roomId] error:", err);

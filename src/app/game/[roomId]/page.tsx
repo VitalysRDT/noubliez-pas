@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef, use } from "react";
+import { useEffect, useState, useCallback, use } from "react";
 import { useRouter } from "next/navigation";
 import { useRoom } from "@/hooks/useRoom";
 import { useAudio } from "@/hooks/useAudio";
@@ -8,8 +8,6 @@ import { useKaraoke } from "@/hooks/useKaraoke";
 import { WaitingRoom } from "@/components/WaitingRoom";
 import { ScoreBoard } from "@/components/ScoreBoard";
 import { KaraokeLyrics } from "@/components/KaraokeLyrics";
-import { AudioPlayer } from "@/components/AudioPlayer";
-import type { AudioPlayerHandle } from "@/components/AudioPlayer";
 import { PausePointOverlay } from "@/components/PausePointOverlay";
 import { PointsPyramid } from "@/components/PointsPyramid";
 import { RoundResult } from "@/components/RoundResult";
@@ -31,31 +29,19 @@ export default function GamePage({
   const [isLocalMode, setIsLocalMode] = useState(false);
   const [countdown, setCountdown] = useState<number | null>(null);
   const [prevStatus, setPrevStatus] = useState<string | null>(null);
-
-  // Audio
-  const [audioReady, setAudioReady] = useState(false);
-  const [audioError, setAudioError] = useState(false);
-  const audioRef = useRef<AudioPlayerHandle>(null);
-
-  // Initials joker
   const [initialsUsed, setInitialsUsed] = useState(false);
   const [initials, setInitials] = useState<Record<number, string> | null>(null);
 
-  // Pause point result display
-  const [ppResultDisplay, setPpResultDisplay] = useState<{
-    ppId: string;
-    p1Points: number;
-    p2Points: number;
-  } | null>(null);
-
   const song = state?.currentSong ?? null;
-  const hasAudio = !!song?.audioUrl && !audioError;
-  const isKaraokeMode = !!(song?.hasKaraoke && hasAudio);
+  const isPlaying = state?.status === "playing";
 
+  // Karaoke — audio managed internally by the hook
   const karaoke = useKaraoke({
+    audioUrl: song?.audioUrl ?? null,
     lyrics: song?.lyrics ?? [],
     pausePoints: song?.pausePoints ?? [],
     timingOffsetMs: song?.timingOffsetMs ?? 0,
+    enabled: isPlaying && !!song?.hasKaraoke,
   });
 
   // Load player info
@@ -72,19 +58,11 @@ export default function GamePage({
     }
   }, []);
 
-  // Set audio ref for karaoke
-  useEffect(() => {
-    if (audioRef.current) karaoke.setPlayerRef(audioRef.current);
-  }, [audioReady, karaoke.setPlayerRef]);
-
   // Reset on new round
   useEffect(() => {
     if (state?.status === "playing" && prevStatus !== "playing") {
-      setAudioReady(false);
-      setAudioError(false);
       setInitialsUsed(false);
       setInitials(null);
-      setPpResultDisplay(null);
       karaoke.reset();
     }
   }, [state?.status, prevStatus, karaoke]);
@@ -128,10 +106,7 @@ export default function GamePage({
           playTts("tie", {});
         } else {
           playTts("roundEnd", {
-            winner:
-              p1 > p2
-                ? state.players[1].name
-                : state.players[2]?.name ?? "",
+            winner: p1 > p2 ? state.players[1].name : state.players[2]?.name ?? "",
             score: Math.max(p1, p2),
             title: state.currentSong.title,
             artist: state.currentSong.artist,
@@ -146,10 +121,7 @@ export default function GamePage({
       const s2 = state.players[2]?.score ?? 0;
       if (s1 !== s2) {
         playTts("gameEnd", {
-          winner:
-            s1 > s2
-              ? state.players[1].name
-              : state.players[2]?.name ?? "",
+          winner: s1 > s2 ? state.players[1].name : state.players[2]?.name ?? "",
           score: Math.max(s1, s2),
           score1: s1,
           score2: s2,
@@ -167,49 +139,33 @@ export default function GamePage({
       const ppId = karaoke.activePausePoint.id;
 
       try {
-        // In local mode, submit for both players (same answers for now — they share screen)
         if (isLocalMode) {
           await Promise.all([
             fetch(`/api/rooms/${roomId}/answer`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                playerId: 1,
-                pausePointId: ppId,
-                answers,
-              }),
+              body: JSON.stringify({ playerId: 1, pausePointId: ppId, answers }),
             }),
             fetch(`/api/rooms/${roomId}/answer`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                playerId: 2,
-                pausePointId: ppId,
-                answers,
-              }),
+              body: JSON.stringify({ playerId: 2, pausePointId: ppId, answers }),
             }),
           ]);
         } else {
           await fetch(`/api/rooms/${roomId}/answer`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              playerId,
-              pausePointId: ppId,
-              answers,
-            }),
+            body: JSON.stringify({ playerId, pausePointId: ppId, answers }),
           });
         }
 
-        // Refetch state to get updated scores
         await refetch();
 
-        // Show brief result then resume
-        setPpResultDisplay({ ppId, p1Points: 0, p2Points: 0 });
+        // Brief pause to show result, then resume
         setTimeout(() => {
-          setPpResultDisplay(null);
           karaoke.resumeAfterPausePoint(ppId);
-        }, 2500);
+        }, 2000);
       } catch (err) {
         console.error("PausePoint submit error:", err);
         karaoke.resumeAfterPausePoint(ppId);
@@ -242,15 +198,11 @@ export default function GamePage({
   }, [roomId]);
 
   // ── Rendering ──
-
   if (roomError) {
     return (
       <main className="flex-1 flex flex-col items-center justify-center px-4 text-center gap-4">
         <p className="text-error text-lg font-bold">{roomError}</p>
-        <button
-          onClick={() => router.push("/lobby")}
-          className="px-6 py-3 rounded-xl bg-primary text-white font-bold"
-        >
+        <button onClick={() => router.push("/lobby")} className="px-6 py-3 rounded-xl bg-primary text-white font-bold">
           Retour au lobby
         </button>
       </main>
@@ -269,23 +221,9 @@ export default function GamePage({
   const p2Name = state.players[2]?.name ?? "Joueur 2";
 
   return (
-    <main className="flex-1 flex flex-col items-center px-4 py-6 max-w-2xl mx-auto w-full gap-4">
-      {/* Audio player (invisible, progress bar at bottom) */}
-      {hasAudio && song?.audioUrl && state.status === "playing" && (
-        <AudioPlayer
-          ref={audioRef}
-          audioUrl={song.audioUrl}
-          onReady={() => setAudioReady(true)}
-          onTimeUpdate={karaoke.handleTimeUpdate}
-          onEnded={() => {
-            // Song finished — finalize round if not already
-          }}
-          onError={() => setAudioError(true)}
-        />
-      )}
-
-      {/* Pause Point Overlay */}
-      {karaoke.activePausePoint && song && state.status === "playing" && (
+    <main className="flex-1 flex flex-col items-center px-4 py-6 max-w-2xl mx-auto w-full gap-4 relative">
+      {/* PausePoint Overlay (fullscreen modal) */}
+      {karaoke.activePausePoint && song && isPlaying && (
         <PausePointOverlay
           pausePoint={karaoke.activePausePoint}
           lyrics={song.lyrics}
@@ -309,116 +247,111 @@ export default function GamePage({
       {/* Countdown */}
       {countdown !== null && (
         <div className="flex-1 flex items-center justify-center">
-          <div
-            className="text-8xl font-extrabold text-accent animate-countdown-tick"
-            key={countdown}
-          >
+          <div className="text-8xl font-extrabold text-accent animate-countdown-tick" key={countdown}>
             {countdown > 0 ? countdown : "GO !"}
           </div>
         </div>
       )}
 
-      {/* ── Playing ── */}
-      {state.status === "playing" && (
+      {/* ══ PLAYING ══ */}
+      {isPlaying && song && (
         <>
           {/* Scores */}
-          <div className="w-full">
-            <ScoreBoard
-              state={state}
-              currentPlayerId={isLocalMode ? (0 as unknown as 1) : playerId}
-              isLocalMode={isLocalMode}
-            />
-          </div>
+          <ScoreBoard
+            state={state}
+            currentPlayerId={isLocalMode ? (0 as unknown as 1) : playerId}
+            isLocalMode={isLocalMode}
+          />
 
-          {/* Points Pyramid + Karaoke side by side */}
-          {isKaraokeMode && song && (
-            <div className="w-full flex gap-4">
-              {/* Pyramid */}
-              <div className="shrink-0 w-36 hidden sm:block">
-                <PointsPyramid
-                  pausePoints={song.pausePoints}
-                  completedIds={
-                    state.karaoke?.completedPausePoints ?? []
-                  }
-                  scores={state.karaoke?.pausePointScores ?? {}}
-                  activePausePointId={karaoke.activePausePoint?.id ?? null}
-                  playerId={playerId}
-                />
-              </div>
+          {/* Song has karaoke: audio + lyrics */}
+          {song.hasKaraoke && (
+            <div className="w-full flex-1 flex flex-col gap-4">
+              {/* Song info + start button */}
+              {!karaoke.started && (
+                <div className="flex-1 flex flex-col items-center justify-center gap-6 py-8">
+                  <div className="text-center space-y-2">
+                    <p className="text-xs text-white/40 uppercase tracking-wider">
+                      Manche {state.currentRound} / {state.totalRounds}
+                    </p>
+                    <h2 className="text-3xl sm:text-4xl font-extrabold text-accent">
+                      {song.title}
+                    </h2>
+                    <p className="text-xl text-white/60">{song.artist}</p>
+                  </div>
 
-              {/* Karaoke lyrics */}
-              <div className="flex-1 min-w-0">
-                {!karaoke.started && audioReady && (
-                  <div className="flex flex-col items-center gap-4 py-8">
-                    <div className="text-center space-y-1">
-                      <h3 className="text-xl font-bold text-accent">
-                        {song.title}
-                      </h3>
-                      <p className="text-white/50">{song.artist}</p>
-                    </div>
+                  {karaoke.audioReady && (
                     <button
                       onClick={karaoke.startPlayback}
-                      className="px-8 py-4 rounded-xl bg-accent hover:bg-accent-light text-black font-bold text-lg transition-all hover:scale-105 animate-glow-pulse"
+                      className="px-10 py-5 rounded-2xl bg-accent hover:bg-accent-light text-black font-extrabold text-xl transition-all hover:scale-105 animate-glow-pulse"
                     >
                       Lancer la musique
                     </button>
-                  </div>
-                )}
+                  )}
 
-                {!audioReady && !audioError && (
-                  <div className="text-center text-white/50 py-8 flex items-center justify-center gap-2">
-                    <div className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin" />
-                    Chargement...
-                  </div>
-                )}
+                  {!karaoke.audioReady && !karaoke.audioError && (
+                    <div className="flex items-center gap-3 text-white/50">
+                      <div className="w-5 h-5 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+                      Chargement de la musique...
+                    </div>
+                  )}
 
-                {karaoke.started && (
-                  <KaraokeLyrics
-                    lyrics={song.lyrics}
-                    activeLineIndex={karaoke.activeLineIndex}
-                    pausePoints={song.pausePoints}
-                    completedPausePointIds={
-                      state.karaoke?.completedPausePoints ?? []
-                    }
-                    pausePointScores={
-                      state.karaoke?.pausePointScores ?? {}
-                    }
-                    activePausePointId={
-                      karaoke.activePausePoint?.id ?? null
-                    }
-                    playerId={playerId}
-                  />
-                )}
-              </div>
+                  {karaoke.audioError && (
+                    <p className="text-error">Erreur de chargement audio</p>
+                  )}
+                </div>
+              )}
+
+              {/* Karaoke active */}
+              {karaoke.started && (
+                <div className="w-full flex gap-4 flex-1">
+                  {/* Pyramid (desktop) */}
+                  <div className="shrink-0 w-32 hidden sm:block">
+                    <PointsPyramid
+                      pausePoints={song.pausePoints}
+                      completedIds={state.karaoke?.completedPausePoints ?? []}
+                      scores={state.karaoke?.pausePointScores ?? {}}
+                      activePausePointId={karaoke.activePausePoint?.id ?? null}
+                      playerId={playerId}
+                    />
+                  </div>
+
+                  {/* Lyrics */}
+                  <div className="flex-1 min-w-0">
+                    <KaraokeLyrics
+                      lyrics={song.lyrics}
+                      activeLineIndex={karaoke.activeLineIndex}
+                      pausePoints={song.pausePoints}
+                      completedPausePointIds={state.karaoke?.completedPausePoints ?? []}
+                      pausePointScores={state.karaoke?.pausePointScores ?? {}}
+                      activePausePointId={karaoke.activePausePoint?.id ?? null}
+                      playerId={playerId}
+                    />
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
-          {/* Non-karaoke fallback: song has no audio */}
-          {!isKaraokeMode && song && (
-            <div className="text-center py-8 text-white/50">
-              Cette chanson n&apos;a pas d&apos;audio. Passez à la suivante.
+          {/* No karaoke: fallback text */}
+          {!song.hasKaraoke && (
+            <div className="text-center py-8 space-y-4">
+              <h2 className="text-2xl font-bold text-accent">{song.title}</h2>
+              <p className="text-white/60">{song.artist}</p>
+              <p className="text-white/40 text-sm">
+                Cette chanson n&apos;a pas d&apos;audio synchronisé.
+              </p>
               <button
                 onClick={handleNextRound}
-                className="block mx-auto mt-4 px-6 py-3 rounded-xl bg-primary text-white font-bold"
+                className="px-6 py-3 rounded-xl bg-primary text-white font-bold"
               >
                 Chanson suivante
               </button>
             </div>
           )}
-
-          {/* PP result flash */}
-          {ppResultDisplay && (
-            <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-30 bg-bg-dark/90 border border-white/20 rounded-2xl px-8 py-6 text-center animate-fade-in-up">
-              <p className="text-lg font-bold text-white">
-                Résultat du palier
-              </p>
-              {/* This will be filled by the refetched state */}
-            </div>
-          )}
         </>
       )}
 
-      {/* ── Revealing ── */}
+      {/* ══ REVEALING ══ */}
       {state.status === "revealing" && state.roundResults && (
         <div className="w-full space-y-4">
           <ScoreBoard
@@ -426,26 +359,7 @@ export default function GamePage({
             currentPlayerId={isLocalMode ? (0 as unknown as 1) : playerId}
             isLocalMode={isLocalMode}
           />
-          {song && (
-            <SongReveal
-              title={song.title}
-              artist={song.artist}
-              year={song.year}
-            />
-          )}
-          {song && (
-            <KaraokeLyrics
-              lyrics={song.lyrics}
-              activeLineIndex={999}
-              pausePoints={song.pausePoints}
-              completedPausePointIds={song.pausePoints.map((p) => p.id)}
-              pausePointScores={
-                state.karaoke?.pausePointScores ?? {}
-              }
-              activePausePointId={null}
-              playerId={playerId}
-            />
-          )}
+          {song && <SongReveal title={song.title} artist={song.artist} year={song.year} />}
           <RoundResult
             results={state.roundResults}
             player1Name={p1Name}
@@ -453,17 +367,14 @@ export default function GamePage({
             blanksCount={song?.blanks.length ?? 0}
           />
           {state.currentRound < state.totalRounds && (
-            <button
-              onClick={handleNextRound}
-              className="w-full py-4 rounded-xl bg-primary hover:bg-primary-light font-bold text-lg transition-all hover:scale-[1.02]"
-            >
+            <button onClick={handleNextRound} className="w-full py-4 rounded-xl bg-primary hover:bg-primary-light font-bold text-lg transition-all hover:scale-[1.02]">
               Manche suivante
             </button>
           )}
         </div>
       )}
 
-      {/* ── Finished ── */}
+      {/* ══ FINISHED ══ */}
       {state.status === "finished" && (
         <div className="w-full space-y-6 text-center animate-fade-in-up">
           <ScoreBoard
@@ -471,13 +382,7 @@ export default function GamePage({
             currentPlayerId={isLocalMode ? (0 as unknown as 1) : playerId}
             isLocalMode={isLocalMode}
           />
-          {song && (
-            <SongReveal
-              title={song.title}
-              artist={song.artist}
-              year={song.year}
-            />
-          )}
+          {song && <SongReveal title={song.title} artist={song.artist} year={song.year} />}
           {state.roundResults && (
             <RoundResult
               results={state.roundResults}
@@ -491,32 +396,13 @@ export default function GamePage({
             {(() => {
               const s1 = state.players[1].score;
               const s2 = state.players[2]?.score ?? 0;
-              if (s1 > s2)
-                return (
-                  <p className="text-xl">
-                    <span className="text-accent font-bold">{p1Name}</span>{" "}
-                    gagne {s1} à {s2} !
-                  </p>
-                );
-              if (s2 > s1)
-                return (
-                  <p className="text-xl">
-                    <span className="text-accent font-bold">{p2Name}</span>{" "}
-                    gagne {s2} à {s1} !
-                  </p>
-                );
-              return (
-                <p className="text-xl text-accent font-bold">
-                  Egalité ! {s1} - {s2}
-                </p>
-              );
+              if (s1 > s2) return <p className="text-xl"><span className="text-accent font-bold">{p1Name}</span> gagne {s1} à {s2} !</p>;
+              if (s2 > s1) return <p className="text-xl"><span className="text-accent font-bold">{p2Name}</span> gagne {s2} à {s1} !</p>;
+              return <p className="text-xl text-accent font-bold">Egalité ! {s1} - {s2}</p>;
             })()}
           </div>
           <button
-            onClick={() => {
-              sessionStorage.removeItem("localMode");
-              router.push("/lobby");
-            }}
+            onClick={() => { sessionStorage.removeItem("localMode"); router.push("/lobby"); }}
             className="w-full py-4 rounded-xl bg-primary hover:bg-primary-light font-bold text-lg transition-all hover:scale-[1.02]"
           >
             Nouvelle partie
