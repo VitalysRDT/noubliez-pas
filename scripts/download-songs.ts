@@ -11,7 +11,7 @@
  *   DATABASE_URL, BLOB_READ_WRITE_TOKEN
  */
 
-import { execFileSync } from "child_process";
+import { execFileSync, execSync } from "child_process";
 import {
   existsSync,
   mkdirSync,
@@ -71,31 +71,45 @@ function safeName(artist: string, title: string): string {
     .substring(0, 80);
 }
 
+function shellEscape(s: string): string {
+  return "'" + s.replace(/'/g, "'\\''") + "'";
+}
+
 function downloadSong(
   artist: string,
   title: string,
   outPath: string
 ): boolean {
   const query = `ytsearch1:${artist} ${title} audio`;
+  const cmd = [
+    "yt-dlp",
+    "-x",
+    "--audio-format mp3",
+    `--audio-quality ${BITRATE}`,
+    "--no-playlist",
+    "--max-downloads 1",
+    "--remote-components ejs:github",
+    `--postprocessor-args ${shellEscape("ffmpeg:-t " + MAX_DURATION)}`,
+    `--output ${shellEscape(outPath + ".%(ext)s")}`,
+    shellEscape(query),
+  ].join(" ");
+
   try {
-    execFileSync(
-      "yt-dlp",
-      [
-        "-x",
-        "--audio-format", "mp3",
-        "--audio-quality", BITRATE,
-        "--no-playlist",
-        "--max-downloads", "1",
-        "--postprocessor-args", `ffmpeg:-t ${MAX_DURATION}`,
-        "--output", `${outPath}.%(ext)s`,
-        query,
-      ],
-      { stdio: "pipe", timeout: 180_000 }
-    );
-    return true;
+    execSync(cmd, {
+      stdio: "pipe",
+      timeout: 180_000,
+      shell: "/bin/zsh",
+      env: {
+        ...process.env,
+        PATH: `/opt/homebrew/bin:/opt/miniconda3/bin:/usr/local/bin:${process.env.PATH}`,
+      },
+    });
   } catch {
-    return false;
+    // yt-dlp exits non-zero with --max-downloads, check if file exists anyway
   }
+  // Check if the mp3 file was created
+  const found = findDownloadedFile(path.basename(outPath));
+  return found !== null;
 }
 
 function findDownloadedFile(prefix: string): string | null {
