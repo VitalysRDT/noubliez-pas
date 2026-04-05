@@ -10,6 +10,7 @@ type Song = {
   year: number | null;
   genre: string | null;
   difficulty: number;
+  audioUrl: string | null;
   youtubeId: string | null;
   timingOffsetMs: number | null;
 };
@@ -595,9 +596,18 @@ function AdminContent() {
                   <div className="font-bold truncate">{s.title}</div>
                   <div className="text-sm text-white/50">
                     {s.artist} {s.year ? `(${s.year})` : ""} — {s.genre}
+                    {s.audioUrl ? (
+                      <span className="ml-2 text-success text-xs" title={s.audioUrl}>
+                        MP3
+                      </span>
+                    ) : (
+                      <span className="ml-2 text-error/60 text-xs">
+                        pas d&apos;audio
+                      </span>
+                    )}
                     {s.youtubeId && (
-                      <span className="ml-2 text-success text-xs">
-                        YT: {s.youtubeId}
+                      <span className="ml-1 text-primary text-xs">
+                        YT
                       </span>
                     )}
                   </div>

@@ -12,6 +12,7 @@ export async function GET() {
         year: songs.year,
         genre: songs.genre,
         difficulty: songs.difficulty,
+        audioUrl: songs.audioUrl,
         youtubeId: songs.youtubeId,
         timingOffsetMs: songs.timingOffsetMs,
       })

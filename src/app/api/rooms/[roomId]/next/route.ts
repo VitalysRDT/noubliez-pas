@@ -70,6 +70,7 @@ export async function POST(
       artist: songRow.artist,
       year: songRow.year,
       lyrics: songRow.lyrics as LyricLine[],
+      audioUrl: songRow.audioUrl,
       youtubeId: songRow.youtubeId,
       timingOffsetMs: songRow.timingOffsetMs,
       lrcTimestamps: songRow.lrcTimestamps,

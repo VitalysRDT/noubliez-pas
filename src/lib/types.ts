@@ -36,9 +36,10 @@ export type CurrentSong = {
   year: number | null;
   lyrics: LyricLine[];
   blanks: number[]; // global word indices that are blanked
+  audioUrl: string | null;
   youtubeId: string | null;
   timingOffsetMs: number;
-  hasKaraoke: boolean; // true if youtubeId + syncedLyrics timestamps present
+  hasKaraoke: boolean; // true if (audioUrl OR youtubeId) + synced timestamps
 };
 
 // ── Karaoke state (inside GameState) ──

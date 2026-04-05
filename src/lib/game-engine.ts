@@ -38,6 +38,7 @@ export function prepareSong(
     artist: string;
     year: number | null;
     lyrics: LyricLine[];
+    audioUrl?: string | null;
     youtubeId?: string | null;
     timingOffsetMs?: number | null;
     lrcTimestamps?: unknown;
@@ -46,6 +47,7 @@ export function prepareSong(
 ): CurrentSong {
   const blanks = generateBlanks(song.lyrics, difficulty);
   const hasTimestamps = song.lyrics.some((l) => l.timeMs !== undefined);
+  const hasAudioSource = !!(song.audioUrl || song.youtubeId);
   return {
     id: song.id,
     title: song.title,
@@ -53,9 +55,10 @@ export function prepareSong(
     year: song.year,
     lyrics: song.lyrics,
     blanks,
+    audioUrl: song.audioUrl ?? null,
     youtubeId: song.youtubeId ?? null,
     timingOffsetMs: song.timingOffsetMs ?? 0,
-    hasKaraoke: !!(song.youtubeId && hasTimestamps),
+    hasKaraoke: hasAudioSource && hasTimestamps,
   };
 }
 
