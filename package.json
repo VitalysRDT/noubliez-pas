@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "download-audio": "tsx scripts/download-songs.ts",
+    "mass-import": "tsx scripts/mass-import.ts",
     "db:push": "drizzle-kit push"
   },
   "dependencies": {
