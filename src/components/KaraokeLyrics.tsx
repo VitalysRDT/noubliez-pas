@@ -13,6 +13,7 @@ interface KaraokeLyricsProps {
   disabled: boolean;
   roundResults?: RoundResults | null;
   playerId: 1 | 2;
+  containerId?: string;
 }
 
 export function KaraokeLyrics({
@@ -25,6 +26,7 @@ export function KaraokeLyrics({
   disabled,
   roundResults,
   playerId,
+  containerId,
 }: KaraokeLyricsProps) {
   const blanksSet = new Set(blanks);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -70,6 +72,7 @@ export function KaraokeLyrics({
   return (
     <div
       ref={containerRef}
+      id={containerId}
       className="space-y-2 text-base sm:text-lg leading-relaxed overflow-y-auto max-h-[60vh] py-4 px-2 scroll-smooth"
     >
       {lineData.map(({ line, wordData, hasBlanks }) => {

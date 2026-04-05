@@ -12,6 +12,8 @@ interface LyricsDisplayProps {
   disabled: boolean;
   roundResults?: RoundResults | null;
   playerId: 1 | 2;
+  containerId?: string;
+  autoFocusEnabled?: boolean;
 }
 
 export function LyricsDisplay({
@@ -22,6 +24,8 @@ export function LyricsDisplay({
   disabled,
   roundResults,
   playerId,
+  containerId,
+  autoFocusEnabled = true,
 }: LyricsDisplayProps) {
   const blanksSet = new Set(blanks);
   const blanksOrdered = [...blanks].sort((a, b) => a - b);
@@ -38,13 +42,16 @@ export function LyricsDisplay({
     (currentGlobalIndex: number) => {
       const currentPos = blanksOrdered.indexOf(currentGlobalIndex);
       if (currentPos < blanksOrdered.length - 1) {
-        const nextEl = document.querySelector<HTMLInputElement>(
+        const root = containerId
+          ? document.getElementById(containerId)
+          : document;
+        const nextEl = root?.querySelector<HTMLInputElement>(
           `[data-blank-index="${blanksOrdered[currentPos + 1]}"]`
         );
         nextEl?.focus();
       }
     },
-    [blanksOrdered]
+    [blanksOrdered, containerId]
   );
 
   const revealing = roundResults !== null && roundResults !== undefined;
@@ -56,7 +63,7 @@ export function LyricsDisplay({
   let globalIndex = 0;
 
   return (
-    <div className="space-y-3 text-lg sm:text-xl leading-relaxed">
+    <div id={containerId} className="space-y-3 text-lg sm:text-xl leading-relaxed">
       {lyrics.map((line) => (
         <p key={line.index} className="text-center">
           {line.words.map((word) => {
@@ -133,7 +140,7 @@ export function LyricsDisplay({
               );
             }
 
-            const isFirst = blanksOrdered[0] === gi;
+            const isFirst = autoFocusEnabled && blanksOrdered[0] === gi;
 
             return (
               <span key={gi} className="inline-block" data-blank-index={gi}>
