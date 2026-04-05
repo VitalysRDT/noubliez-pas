@@ -2,11 +2,10 @@ import { NextResponse } from "next/server";
 import {
   getGameState,
   setGameState,
-  getPlayerAnswers,
-  setPlayerAnswers,
 } from "@/lib/redis";
-import { resolveRound } from "@/lib/game-engine";
-import type { SubmitAnswerRequest } from "@/lib/types";
+import { scorePausePoint, resolveRound } from "@/lib/game-engine";
+import type { SubmitPauseAnswerRequest } from "@/lib/types";
+import { redis } from "@/lib/redis-client";
 
 export async function POST(
   request: Request,
@@ -14,7 +13,7 @@ export async function POST(
 ) {
   try {
     const { roomId } = await params;
-    const body = (await request.json()) as SubmitAnswerRequest;
+    const body = (await request.json()) as SubmitPauseAnswerRequest;
 
     if (body.playerId !== 1 && body.playerId !== 2) {
       return NextResponse.json(
@@ -31,40 +30,125 @@ export async function POST(
       );
     }
 
-    if (state.status !== "playing") {
+    if (state.status !== "playing" || !state.currentSong || !state.karaoke) {
       return NextResponse.json(
         { error: "Not in playing state" },
         { status: 409 }
       );
     }
 
-    // Save this player's answers
-    await setPlayerAnswers(roomId, body.playerId, body.answers);
-
-    // Check if both players have answered
-    const p1Answers = body.playerId === 1
-      ? body.answers
-      : await getPlayerAnswers(roomId, 1);
-    const p2Answers = body.playerId === 2
-      ? body.answers
-      : await getPlayerAnswers(roomId, 2);
-
-    const p1Submitted = Object.keys(p1Answers).length > 0;
-    const p2Submitted = Object.keys(p2Answers).length > 0;
-
-    // Also check timeout
-    const timedOut =
-      state.roundDeadline !== null && Date.now() > state.roundDeadline;
-
-    if ((p1Submitted && p2Submitted) || timedOut) {
-      const resolved = resolveRound(state, p1Answers, p2Answers);
-      await setGameState(roomId, resolved);
-      return NextResponse.json({ resolved: true, state: resolved });
+    const ppId = body.pausePointId;
+    const pp = state.currentSong.pausePoints.find((p) => p.id === ppId);
+    if (!pp) {
+      return NextResponse.json(
+        { error: "Invalid pausePointId" },
+        { status: 400 }
+      );
     }
 
+    // Store this player's answers for this pause point
+    const answerKey = `room:${roomId}:pp:${ppId}:${body.playerId}`;
+    await redis().set(answerKey, JSON.stringify(body.answers), { ex: 3600 });
+
+    // Check if the other player has also answered
+    const otherId = body.playerId === 1 ? 2 : 1;
+    const otherKey = `room:${roomId}:pp:${ppId}:${otherId}`;
+    const otherRaw = await redis().get<string>(otherKey);
+
+    // For single player (player 2 is null), auto-resolve
+    const isSingleOrBothAnswered =
+      state.players[2] === null || otherRaw !== null;
+
+    if (!isSingleOrBothAnswered) {
+      return NextResponse.json({
+        resolved: false,
+        message: "Waiting for other player",
+      });
+    }
+
+    // Both answered (or solo mode) — score this pause point
+    const p1Raw =
+      body.playerId === 1
+        ? body.answers
+        : JSON.parse(
+            (await redis().get<string>(`room:${roomId}:pp:${ppId}:1`)) ?? "{}"
+          );
+    const p2Raw =
+      body.playerId === 2
+        ? body.answers
+        : state.players[2]
+          ? JSON.parse(
+              (await redis().get<string>(`room:${roomId}:pp:${ppId}:2`)) ?? "{}"
+            )
+          : {};
+
+    const ppScore = scorePausePoint(
+      state.currentSong.lyrics,
+      pp.blankIndices,
+      p1Raw,
+      p2Raw
+    );
+
+    // Update karaoke state
+    const updatedKaraoke = {
+      ...state.karaoke,
+      activePausePointId: null,
+      completedPausePoints: [...state.karaoke.completedPausePoints, ppId],
+      pausePointScores: {
+        ...state.karaoke.pausePointScores,
+        [ppId]: ppScore,
+      },
+      pauseDeadline: null,
+    };
+
+    // Update player scores immediately (all-or-nothing)
+    const p1Points = ppScore.p1AllCorrect ? pp.points : 0;
+    const p2Points = ppScore.p2AllCorrect ? pp.points : 0;
+
+    // Check if all pause points are done
+    const allDone =
+      updatedKaraoke.completedPausePoints.length >=
+      state.currentSong.pausePoints.length;
+
+    let updatedState;
+    if (allDone) {
+      // Resolve the full round
+      updatedState = resolveRound(state, updatedKaraoke.pausePointScores);
+    } else {
+      // Continue playing — update scores + karaoke state
+      updatedState = {
+        ...state,
+        players: {
+          1: {
+            ...state.players[1],
+            score: state.players[1].score + p1Points,
+          },
+          2: state.players[2]
+            ? {
+                ...state.players[2],
+                score: state.players[2].score + p2Points,
+              }
+            : null,
+        },
+        karaoke: updatedKaraoke,
+      };
+    }
+
+    await setGameState(roomId, updatedState);
+
+    // Clean up per-PP answer keys
+    await Promise.all([
+      redis().del(`room:${roomId}:pp:${ppId}:1`),
+      redis().del(`room:${roomId}:pp:${ppId}:2`),
+    ]);
+
     return NextResponse.json({
-      resolved: false,
-      message: "Waiting for other player",
+      resolved: true,
+      allDone,
+      ppScore,
+      p1Points,
+      p2Points,
+      state: updatedState,
     });
   } catch (err) {
     console.error("POST /api/rooms/[roomId]/answer error:", err);

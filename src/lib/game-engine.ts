@@ -1,13 +1,17 @@
 import { matchAnswer } from "./fuzzy-match";
-import { buildAnswerKey, generateBlanks } from "./lyrics-processor";
+import {
+  buildPausePoints,
+  getAllBlanks,
+  buildPausePointAnswerKey,
+} from "./karaoke-engine";
 import type {
   CurrentSong,
   GameState,
   LyricLine,
+  PausePointScore,
   RoundResults,
+  KaraokeState,
 } from "./types";
-
-const ROUND_DURATION_MS = 30_000;
 
 export function createInitialState(
   roomCode: string,
@@ -31,23 +35,21 @@ export function createInitialState(
   };
 }
 
-export function prepareSong(
-  song: {
-    id: string;
-    title: string;
-    artist: string;
-    year: number | null;
-    lyrics: LyricLine[];
-    audioUrl?: string | null;
-    youtubeId?: string | null;
-    timingOffsetMs?: number | null;
-    lrcTimestamps?: unknown;
-  },
-  difficulty: 1 | 2 | 3 = 2
-): CurrentSong {
-  const blanks = generateBlanks(song.lyrics, difficulty);
+export function prepareSong(song: {
+  id: string;
+  title: string;
+  artist: string;
+  year: number | null;
+  lyrics: LyricLine[];
+  audioUrl?: string | null;
+  youtubeId?: string | null;
+  timingOffsetMs?: number | null;
+}): CurrentSong {
+  const pausePoints = buildPausePoints(song.lyrics);
+  const blanks = getAllBlanks(pausePoints);
   const hasTimestamps = song.lyrics.some((l) => l.timeMs !== undefined);
   const hasAudioSource = !!(song.audioUrl || song.youtubeId);
+
   return {
     id: song.id,
     title: song.title,
@@ -55,10 +57,11 @@ export function prepareSong(
     year: song.year,
     lyrics: song.lyrics,
     blanks,
+    pausePoints,
     audioUrl: song.audioUrl ?? null,
     youtubeId: song.youtubeId ?? null,
     timingOffsetMs: song.timingOffsetMs ?? 0,
-    hasKaraoke: hasAudioSource && hasTimestamps,
+    hasKaraoke: hasAudioSource && hasTimestamps && pausePoints.length > 0,
   };
 }
 
@@ -66,14 +69,15 @@ export function startRound(
   state: GameState,
   song: CurrentSong
 ): GameState {
-  const karaokeState = song.hasKaraoke && song.youtubeId
+  const karaokeState: KaraokeState | null = song.hasKaraoke
     ? {
-        youtubeId: song.youtubeId,
+        isPlaying: false,
         currentLineIndex: 0,
-        isPlaying: false, // will be set to true after user interaction
-        pausedAtLineIndex: null,
-        resumeAtTimeMs: null,
-        lineDeadline: null,
+        activePausePointId: null,
+        completedPausePoints: [],
+        pausePointScores: {},
+        initialsUsed: false,
+        pauseDeadline: null,
       }
     : null;
 
@@ -82,49 +86,108 @@ export function startRound(
     status: "playing",
     currentRound: state.currentRound + 1,
     currentSong: song,
-    roundDeadline: song.hasKaraoke ? null : Date.now() + ROUND_DURATION_MS,
+    // No global deadline for karaoke mode — each pause point has its own timer
+    roundDeadline: song.hasKaraoke ? null : Date.now() + 30_000,
     roundResults: null,
     usedSongIds: [...state.usedSongIds, song.id],
     karaoke: karaokeState,
   };
 }
 
-export function scoreAnswers(
-  song: CurrentSong,
+/**
+ * Score a single PausePoint's answers for one player.
+ * Returns number of correct words.
+ */
+function scorePlayerPausePoint(
+  lyrics: LyricLine[],
+  blankIndices: number[],
   playerAnswers: Record<number, string>
-): { correct: number; details: Record<number, boolean> } {
-  const answerKey = buildAnswerKey(song.lyrics, song.blanks);
+): { correct: number; allCorrect: boolean } {
+  const answerKey = buildPausePointAnswerKey(lyrics, blankIndices);
   let correct = 0;
-  const details: Record<number, boolean> = {};
-
-  for (const idx of song.blanks) {
+  for (const idx of blankIndices) {
     const expected = answerKey[idx];
     const given = playerAnswers[idx] ?? "";
-    const result = matchAnswer(given, expected);
-    details[idx] = result.match;
-    if (result.match) correct++;
+    if (matchAnswer(given, expected).match) {
+      correct++;
+    }
   }
-
-  return { correct, details };
+  return {
+    correct,
+    allCorrect: correct === blankIndices.length,
+  };
 }
 
-export function resolveRound(
-  state: GameState,
+/**
+ * Score a PausePoint for both players.
+ * TV show rules: all-or-nothing per pause point.
+ * Points awarded only if ALL words are correct.
+ */
+export function scorePausePoint(
+  lyrics: LyricLine[],
+  blankIndices: number[],
   p1Answers: Record<number, string>,
   p2Answers: Record<number, string>
+): PausePointScore {
+  const p1 = scorePlayerPausePoint(lyrics, blankIndices, p1Answers);
+  const p2 = scorePlayerPausePoint(lyrics, blankIndices, p2Answers);
+  const answerKey = buildPausePointAnswerKey(lyrics, blankIndices);
+
+  return {
+    p1Correct: p1.correct,
+    p2Correct: p2.correct,
+    p1AllCorrect: p1.allCorrect,
+    p2AllCorrect: p2.allCorrect,
+    correctAnswers: answerKey,
+    p1Answers,
+    p2Answers,
+  };
+}
+
+/**
+ * Resolve the full round after all pause points are done.
+ * Aggregates all pause point scores.
+ */
+export function resolveRound(
+  state: GameState,
+  ppScores: Record<string, PausePointScore>
 ): GameState {
   if (!state.currentSong) return state;
 
-  const answerKey = buildAnswerKey(state.currentSong.lyrics, state.currentSong.blanks);
-  const p1 = scoreAnswers(state.currentSong, p1Answers);
-  const p2 = scoreAnswers(state.currentSong, p2Answers);
+  const song = state.currentSong;
+  let p1Total = 0;
+  let p2Total = 0;
+  let p1CorrectWords = 0;
+  let p2CorrectWords = 0;
+  const allCorrectAnswers: Record<number, string> = {};
+  const allP1Answers: Record<number, string> = {};
+  const allP2Answers: Record<number, string> = {};
+  const pausePointScoresList: PausePointScore[] = [];
+
+  for (const pp of song.pausePoints) {
+    const score = ppScores[pp.id];
+    if (!score) continue;
+
+    pausePointScoresList.push(score);
+    p1CorrectWords += score.p1Correct;
+    p2CorrectWords += score.p2Correct;
+
+    // All-or-nothing: points only if ALL words correct
+    if (score.p1AllCorrect) p1Total += pp.points;
+    if (score.p2AllCorrect) p2Total += pp.points;
+
+    Object.assign(allCorrectAnswers, score.correctAnswers);
+    Object.assign(allP1Answers, score.p1Answers);
+    Object.assign(allP2Answers, score.p2Answers);
+  }
 
   const roundResults: RoundResults = {
-    player1Correct: p1.correct,
-    player2Correct: p2.correct,
-    correctAnswers: answerKey,
-    player1Answers: p1Answers,
-    player2Answers: p2Answers,
+    player1Correct: p1CorrectWords,
+    player2Correct: p2CorrectWords,
+    correctAnswers: allCorrectAnswers,
+    player1Answers: allP1Answers,
+    player2Answers: allP2Answers,
+    pausePointScores: pausePointScoresList,
   };
 
   const isLastRound = state.currentRound >= state.totalRounds;
@@ -135,17 +198,18 @@ export function resolveRound(
     players: {
       1: {
         ...state.players[1],
-        score: state.players[1].score + p1.correct,
+        score: state.players[1].score + p1Total,
       },
       2: state.players[2]
         ? {
             ...state.players[2],
-            score: state.players[2].score + p2.correct,
+            score: state.players[2].score + p2Total,
           }
         : null,
     },
     roundResults,
     roundDeadline: null,
+    karaoke: null,
   };
 }
 
@@ -164,5 +228,5 @@ export function getWinner(state: GameState): 1 | 2 | null {
   const s2 = state.players[2]?.score ?? 0;
   if (s1 > s2) return 1;
   if (s2 > s1) return 2;
-  return null; // tie
+  return null;
 }

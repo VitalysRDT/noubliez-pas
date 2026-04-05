@@ -1,109 +1,195 @@
-import type { LyricLine, Word } from "./types";
+import type { LyricLine, PausePoint } from "./types";
+import { POINTS_PYRAMID } from "./types";
 
-export type KaraokeLine = {
-  lineIndex: number;
-  timeMs: number;
-  text: string;
-  words: Word[];
-  blanks: number[]; // global word indices that are blanks on this line
-  hasBlanks: boolean;
-};
-
-export type KaraokeAction =
-  | { type: "UPDATE_ACTIVE_LINE"; lineIndex: number }
-  | { type: "PAUSE_FOR_BLANKS"; lineIndex: number; blankIndices: number[] }
-  | { type: "NOOP" };
+const EXCLUDED_WORDS = new Set([
+  "le", "la", "les", "un", "une", "des", "de", "du",
+  "je", "tu", "il", "elle", "on", "nous", "vous", "ils", "elles",
+  "a", "au", "aux", "en", "y",
+  "et", "ou", "mais", "donc", "car", "ni",
+  "est", "ai", "as", "ne", "pas", "plus",
+  "que", "qui", "se", "ce", "sa", "son", "ses",
+  "mon", "ma", "mes", "ton", "ta", "tes",
+  "me", "te", "lui", "leur", "leurs",
+  "si", "ca", "dans", "sur", "par", "pour", "avec", "sans",
+  "tout", "tous", "cette", "ces", "cet",
+]);
 
 /**
- * Build karaoke line data from lyrics + blanks.
+ * Build 5 PausePoints spread throughout the song.
+ * Each PausePoint has increasing word count matching the pyramid.
  */
-export function buildKaraokeLines(
-  lyrics: LyricLine[],
-  blanks: number[]
-): KaraokeLine[] {
-  const blanksSet = new Set(blanks);
-  let globalIndex = 0;
-
-  return lyrics
-    .filter((line) => line.timeMs !== undefined)
-    .map((line) => {
-      const startGlobal = globalIndex;
-      const lineBlanks: number[] = [];
-
-      for (const word of line.words) {
-        if (blanksSet.has(globalIndex)) {
-          lineBlanks.push(globalIndex);
-        }
-        globalIndex++;
+export function buildPausePoints(lyrics: LyricLine[]): PausePoint[] {
+  // Collect all eligible words with their global indices and timestamps
+  const eligible: { gi: number; lineIndex: number; timeMs: number; text: string }[] = [];
+  let gi = 0;
+  for (const line of lyrics) {
+    for (const word of line.words) {
+      const clean = word.text
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-z]/g, "");
+      if (
+        clean.length >= 3 &&
+        !EXCLUDED_WORDS.has(clean) &&
+        word.canBeBlank &&
+        line.timeMs !== undefined
+      ) {
+        eligible.push({
+          gi,
+          lineIndex: line.index,
+          timeMs: line.timeMs,
+          text: word.text,
+        });
       }
-
-      // For lines without timeMs, we already filtered them out
-      return {
-        lineIndex: line.index,
-        timeMs: line.timeMs!,
-        text: line.text,
-        words: line.words,
-        blanks: lineBlanks,
-        hasBlanks: lineBlanks.length > 0,
-      };
-    });
-}
-
-/**
- * Determine what action to take based on current playback time.
- * Called from the client on every time update (~100ms).
- */
-export function onTimeUpdate(
-  currentTimeMs: number,
-  lines: KaraokeLine[],
-  alreadyPausedLines: Set<number>
-): KaraokeAction {
-  // Find lines with blanks that we haven't paused for yet
-  for (const line of lines) {
-    if (
-      line.hasBlanks &&
-      !alreadyPausedLines.has(line.lineIndex) &&
-      currentTimeMs >= line.timeMs - 300 &&
-      currentTimeMs <= line.timeMs + 500
-    ) {
-      return {
-        type: "PAUSE_FOR_BLANKS",
-        lineIndex: line.lineIndex,
-        blankIndices: line.blanks,
-      };
+      gi++;
     }
   }
 
-  // Find active line (last line whose timeMs <= currentTimeMs)
-  let activeLine: KaraokeLine | undefined;
-  for (const line of lines) {
-    if (line.timeMs <= currentTimeMs) {
+  if (eligible.length < 5) return []; // Not enough words for pause points
+
+  // Find song time range
+  const timedLines = lyrics.filter((l) => l.timeMs !== undefined);
+  if (timedLines.length < 10) return [];
+
+  const songStartMs = timedLines[0].timeMs!;
+  const songEndMs = timedLines[timedLines.length - 1].timeMs!;
+  const songDuration = songEndMs - songStartMs;
+
+  if (songDuration < 30_000) return []; // Song too short
+
+  // Divide song into 5 zones, pick words from each zone
+  const numPauses = Math.min(5, POINTS_PYRAMID.length);
+  const zoneSize = songDuration / numPauses;
+  const pausePoints: PausePoint[] = [];
+
+  for (let i = 0; i < numPauses; i++) {
+    const pyramid = POINTS_PYRAMID[i];
+    const zoneStart = songStartMs + i * zoneSize;
+    const zoneEnd = zoneStart + zoneSize;
+
+    // Get eligible words in this zone
+    const zoneWords = eligible.filter(
+      (w) => w.timeMs >= zoneStart && w.timeMs < zoneEnd
+    );
+
+    if (zoneWords.length === 0) continue;
+
+    // Pick words for this pause point (random selection within the zone)
+    const targetCount = Math.min(
+      pyramid.maxWords,
+      Math.max(pyramid.minWords, zoneWords.length)
+    );
+    const shuffled = [...zoneWords].sort(() => Math.random() - 0.5);
+    const picked = shuffled
+      .slice(0, targetCount)
+      .sort((a, b) => a.gi - b.gi);
+
+    if (picked.length < pyramid.minWords) continue;
+
+    // Pause time = just after the last picked word's line
+    const lastWordTimeMs = Math.max(...picked.map((w) => w.timeMs));
+    const pauseTimeMs = lastWordTimeMs + 2000; // 2s after last word
+
+    // Resume time = pause time (resume exactly where we stopped)
+    const resumeTimeMs = pauseTimeMs;
+
+    pausePoints.push({
+      id: `pp-${i}`,
+      index: i,
+      timeMs: pauseTimeMs,
+      resumeTimeMs,
+      blankIndices: picked.map((w) => w.gi),
+      points: pyramid.points,
+      wordCount: picked.length,
+    });
+
+    // Remove picked words from eligible pool so they aren't reused
+    const pickedSet = new Set(picked.map((w) => w.gi));
+    for (let j = eligible.length - 1; j >= 0; j--) {
+      if (pickedSet.has(eligible[j].gi)) {
+        eligible.splice(j, 1);
+      }
+    }
+  }
+
+  return pausePoints;
+}
+
+// ── Time update action ──
+
+export type KaraokeAction =
+  | { type: "UPDATE_ACTIVE_LINE"; lineIndex: number }
+  | { type: "PAUSE_FOR_POINT"; pausePoint: PausePoint }
+  | { type: "SONG_ENDED" }
+  | { type: "NOOP" };
+
+/**
+ * Called on every audio time tick (~100ms).
+ * Determines if we should pause for a PausePoint or update the active line.
+ */
+export function onTimeUpdate(
+  currentTimeMs: number,
+  lyrics: LyricLine[],
+  pausePoints: PausePoint[],
+  completedIds: Set<string>
+): KaraokeAction {
+  // Check for upcoming pause points (within 500ms window)
+  for (const pp of pausePoints) {
+    if (completedIds.has(pp.id)) continue;
+    if (
+      currentTimeMs >= pp.timeMs - 300 &&
+      currentTimeMs <= pp.timeMs + 1000
+    ) {
+      return { type: "PAUSE_FOR_POINT", pausePoint: pp };
+    }
+  }
+
+  // Find active line
+  let activeLine: LyricLine | undefined;
+  for (const line of lyrics) {
+    if (line.timeMs !== undefined && line.timeMs <= currentTimeMs) {
       activeLine = line;
-    } else {
+    } else if (line.timeMs !== undefined && line.timeMs > currentTimeMs) {
       break;
     }
   }
 
   if (activeLine) {
-    return { type: "UPDATE_ACTIVE_LINE", lineIndex: activeLine.lineIndex };
+    return { type: "UPDATE_ACTIVE_LINE", lineIndex: activeLine.index };
   }
 
   return { type: "NOOP" };
 }
 
 /**
- * Calculate the time to resume playback after answering blanks.
- * We resume slightly before the line so the text syncs visually.
+ * Get all blank indices across all pause points.
  */
-export function getResumeTimeMs(
-  pausedLine: KaraokeLine,
-  lines: KaraokeLine[]
-): number {
-  // Find the next line after the paused one
-  const idx = lines.findIndex((l) => l.lineIndex === pausedLine.lineIndex);
-  if (idx >= 0 && idx < lines.length - 1) {
-    // Resume at the paused line's time (the lyrics will catch up)
-    return pausedLine.timeMs;
+export function getAllBlanks(pausePoints: PausePoint[]): number[] {
+  const all: number[] = [];
+  for (const pp of pausePoints) {
+    all.push(...pp.blankIndices);
   }
-  return pausedLine.timeMs;
+  return all.sort((a, b) => a - b);
+}
+
+/**
+ * Build answer key for a specific pause point.
+ */
+export function buildPausePointAnswerKey(
+  lyrics: LyricLine[],
+  blankIndices: number[]
+): Record<number, string> {
+  const blanksSet = new Set(blankIndices);
+  const answers: Record<number, string> = {};
+  let gi = 0;
+  for (const line of lyrics) {
+    for (const word of line.words) {
+      if (blanksSet.has(gi)) {
+        answers[gi] = word.text;
+      }
+      gi++;
+    }
+  }
+  return answers;
 }

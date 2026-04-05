@@ -1,49 +1,53 @@
 "use client";
 
 import { useState, useCallback, useRef } from "react";
-import type { LyricLine } from "@/lib/types";
-import { buildKaraokeLines, onTimeUpdate } from "@/lib/karaoke-engine";
+import type { LyricLine, PausePoint } from "@/lib/types";
+import { onTimeUpdate } from "@/lib/karaoke-engine";
 import type { AudioPlayerHandle } from "@/components/AudioPlayer";
 
 interface UseKaraokeProps {
   lyrics: LyricLine[];
-  blanks: number[];
+  pausePoints: PausePoint[];
   timingOffsetMs: number;
 }
 
-export function useKaraoke({ lyrics, blanks, timingOffsetMs }: UseKaraokeProps) {
+export function useKaraoke({
+  lyrics,
+  pausePoints,
+  timingOffsetMs,
+}: UseKaraokeProps) {
   const [activeLineIndex, setActiveLineIndex] = useState(0);
-  const [pausedForLine, setPausedForLine] = useState<number | null>(null);
+  const [activePausePoint, setActivePausePoint] = useState<PausePoint | null>(
+    null
+  );
   const [isPlaying, setIsPlaying] = useState(false);
   const [started, setStarted] = useState(false);
-  const pausedLinesRef = useRef<Set<number>>(new Set());
+  const [songEnded, setSongEnded] = useState(false);
+  const completedRef = useRef<Set<string>>(new Set());
   const playerRef = useRef<AudioPlayerHandle | null>(null);
-  const lineTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const karaokeLines = buildKaraokeLines(lyrics, blanks);
 
   const handleTimeUpdate = useCallback(
     (timeMs: number) => {
       const adjustedMs = timeMs + timingOffsetMs;
-      const action = onTimeUpdate(adjustedMs, karaokeLines, pausedLinesRef.current);
+      const action = onTimeUpdate(
+        adjustedMs,
+        lyrics,
+        pausePoints,
+        completedRef.current
+      );
 
-      if (action.type === "UPDATE_ACTIVE_LINE") {
-        setActiveLineIndex(action.lineIndex);
-      } else if (action.type === "PAUSE_FOR_BLANKS") {
+      if (action.type === "PAUSE_FOR_POINT") {
         playerRef.current?.pause();
-        pausedLinesRef.current.add(action.lineIndex);
-        setPausedForLine(action.lineIndex);
-        setActiveLineIndex(action.lineIndex);
+        setActivePausePoint(action.pausePoint);
+        setActiveLineIndex(action.pausePoint.index);
         setIsPlaying(false);
-
-        // Auto-resume after 15s
-        if (lineTimerRef.current) clearTimeout(lineTimerRef.current);
-        lineTimerRef.current = setTimeout(() => {
-          resumePlayback();
-        }, 15_000);
+      } else if (action.type === "UPDATE_ACTIVE_LINE") {
+        setActiveLineIndex(action.lineIndex);
+      } else if (action.type === "SONG_ENDED") {
+        setSongEnded(true);
       }
     },
-    [karaokeLines, timingOffsetMs]
+    [lyrics, pausePoints, timingOffsetMs]
   );
 
   const startPlayback = useCallback(() => {
@@ -52,12 +56,25 @@ export function useKaraoke({ lyrics, blanks, timingOffsetMs }: UseKaraokeProps) 
     setIsPlaying(true);
   }, []);
 
-  const resumePlayback = useCallback(() => {
-    setPausedForLine(null);
-    if (lineTimerRef.current) clearTimeout(lineTimerRef.current);
-    playerRef.current?.resume();
-    setIsPlaying(true);
-  }, []);
+  const resumeAfterPausePoint = useCallback(
+    (pausePointId: string) => {
+      completedRef.current.add(pausePointId);
+      setActivePausePoint(null);
+
+      // Check if all pause points done
+      if (completedRef.current.size >= pausePoints.length) {
+        // Let the song continue playing to the end
+        playerRef.current?.resume();
+        setIsPlaying(true);
+        return;
+      }
+
+      // Resume audio
+      playerRef.current?.resume();
+      setIsPlaying(true);
+    },
+    [pausePoints.length]
+  );
 
   const stopPlayback = useCallback(() => {
     playerRef.current?.pause();
@@ -66,11 +83,11 @@ export function useKaraoke({ lyrics, blanks, timingOffsetMs }: UseKaraokeProps) 
 
   const reset = useCallback(() => {
     setActiveLineIndex(0);
-    setPausedForLine(null);
+    setActivePausePoint(null);
     setIsPlaying(false);
     setStarted(false);
-    pausedLinesRef.current = new Set();
-    if (lineTimerRef.current) clearTimeout(lineTimerRef.current);
+    setSongEnded(false);
+    completedRef.current = new Set();
   }, []);
 
   const setPlayerRef = useCallback((handle: AudioPlayerHandle | null) => {
@@ -79,12 +96,14 @@ export function useKaraoke({ lyrics, blanks, timingOffsetMs }: UseKaraokeProps) 
 
   return {
     activeLineIndex,
-    pausedForLine,
+    activePausePoint,
     isPlaying,
     started,
+    songEnded,
+    completedPausePoints: completedRef.current,
     handleTimeUpdate,
     startPlayback,
-    resumePlayback,
+    resumeAfterPausePoint,
     stopPlayback,
     reset,
     setPlayerRef,

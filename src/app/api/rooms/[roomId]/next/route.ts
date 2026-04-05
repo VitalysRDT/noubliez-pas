@@ -73,7 +73,6 @@ export async function POST(
       audioUrl: songRow.audioUrl,
       youtubeId: songRow.youtubeId,
       timingOffsetMs: songRow.timingOffsetMs,
-      lrcTimestamps: songRow.lrcTimestamps,
     });
 
     await clearRoundAnswers(roomId);
