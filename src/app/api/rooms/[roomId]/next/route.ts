@@ -70,6 +70,9 @@ export async function POST(
       artist: songRow.artist,
       year: songRow.year,
       lyrics: songRow.lyrics as LyricLine[],
+      youtubeId: songRow.youtubeId,
+      timingOffsetMs: songRow.timingOffsetMs,
+      lrcTimestamps: songRow.lrcTimestamps,
     });
 
     await clearRoundAnswers(roomId);

@@ -15,6 +15,9 @@ export const songs = pgTable("songs", {
   genre: text("genre"),
   difficulty: integer("difficulty").notNull().default(2),
   lyrics: jsonb("lyrics").notNull(), // LyricLine[]
+  youtubeId: text("youtube_id"),
+  lrcTimestamps: jsonb("lrc_timestamps"), // LRCTimestamp[]
+  timingOffsetMs: integer("timing_offset_ms").default(0),
   createdAt: timestamp("created_at").defaultNow(),
 });
 

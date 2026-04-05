@@ -12,6 +12,8 @@ export async function GET() {
         year: songs.year,
         genre: songs.genre,
         difficulty: songs.difficulty,
+        youtubeId: songs.youtubeId,
+        timingOffsetMs: songs.timingOffsetMs,
       })
       .from(songs);
     return NextResponse.json(allSongs);

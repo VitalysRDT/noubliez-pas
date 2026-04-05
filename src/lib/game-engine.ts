@@ -27,14 +27,25 @@ export function createInitialState(
     roundDeadline: null,
     roundResults: null,
     usedSongIds: [],
+    karaoke: null,
   };
 }
 
 export function prepareSong(
-  song: { id: string; title: string; artist: string; year: number | null; lyrics: LyricLine[] },
+  song: {
+    id: string;
+    title: string;
+    artist: string;
+    year: number | null;
+    lyrics: LyricLine[];
+    youtubeId?: string | null;
+    timingOffsetMs?: number | null;
+    lrcTimestamps?: unknown;
+  },
   difficulty: 1 | 2 | 3 = 2
 ): CurrentSong {
   const blanks = generateBlanks(song.lyrics, difficulty);
+  const hasTimestamps = song.lyrics.some((l) => l.timeMs !== undefined);
   return {
     id: song.id,
     title: song.title,
@@ -42,6 +53,9 @@ export function prepareSong(
     year: song.year,
     lyrics: song.lyrics,
     blanks,
+    youtubeId: song.youtubeId ?? null,
+    timingOffsetMs: song.timingOffsetMs ?? 0,
+    hasKaraoke: !!(song.youtubeId && hasTimestamps),
   };
 }
 
@@ -49,14 +63,26 @@ export function startRound(
   state: GameState,
   song: CurrentSong
 ): GameState {
+  const karaokeState = song.hasKaraoke && song.youtubeId
+    ? {
+        youtubeId: song.youtubeId,
+        currentLineIndex: 0,
+        isPlaying: false, // will be set to true after user interaction
+        pausedAtLineIndex: null,
+        resumeAtTimeMs: null,
+        lineDeadline: null,
+      }
+    : null;
+
   return {
     ...state,
     status: "playing",
     currentRound: state.currentRound + 1,
     currentSong: song,
-    roundDeadline: Date.now() + ROUND_DURATION_MS,
+    roundDeadline: song.hasKaraoke ? null : Date.now() + ROUND_DURATION_MS,
     roundResults: null,
     usedSongIds: [...state.usedSongIds, song.id],
+    karaoke: karaokeState,
   };
 }
 

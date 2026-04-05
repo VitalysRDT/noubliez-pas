@@ -10,6 +10,7 @@ export type LyricLine = {
   index: number;
   text: string;
   words: Word[];
+  timeMs?: number; // LRC timestamp in milliseconds
 };
 
 // ── Game state (Redis) ──
@@ -35,6 +36,20 @@ export type CurrentSong = {
   year: number | null;
   lyrics: LyricLine[];
   blanks: number[]; // global word indices that are blanked
+  youtubeId: string | null;
+  timingOffsetMs: number;
+  hasKaraoke: boolean; // true if youtubeId + syncedLyrics timestamps present
+};
+
+// ── Karaoke state (inside GameState) ──
+
+export type KaraokeState = {
+  youtubeId: string;
+  currentLineIndex: number;
+  isPlaying: boolean;
+  pausedAtLineIndex: number | null;
+  resumeAtTimeMs: number | null;
+  lineDeadline: number | null;
 };
 
 export type GameStatus = "waiting" | "countdown" | "playing" | "revealing" | "finished";
@@ -52,6 +67,7 @@ export type GameState = {
   roundDeadline: number | null; // epoch ms
   roundResults: RoundResults | null;
   usedSongIds: string[];
+  karaoke: KaraokeState | null;
 };
 
 // ── API payloads ──

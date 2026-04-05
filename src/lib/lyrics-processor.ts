@@ -88,3 +88,70 @@ export function parseLyrics(rawLines: string[]): LyricLine[] {
     };
   });
 }
+
+// ── LRCLIB integration ──
+
+const METADATA_PATTERN =
+  /^\[.*\]$|^(intro|outro|refrain|chorus|couplet|verse|bridge|pont|instrumental|solo|hook|pre-chorus|post-chorus|interlude)\s*$/i;
+
+function isMetadataLine(line: string): boolean {
+  return METADATA_PATTERN.test(line.trim());
+}
+
+/**
+ * Parse plain text lyrics (from LRCLIB plainLyrics) into LyricLine[].
+ */
+export function parseLyricsFromText(text: string): LyricLine[] {
+  const lines = text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0)
+    .filter((l) => !isMetadataLine(l));
+  return parseLyrics(lines);
+}
+
+export type LRCTimestamp = {
+  lineIndex: number;
+  timeMs: number;
+};
+
+/**
+ * Parse LRC synced lyrics into LyricLine[] with timestamp data returned separately.
+ */
+export function parseLyricsFromLRC(lrc: string): {
+  lyrics: LyricLine[];
+  timestamps: LRCTimestamp[];
+} {
+  const regex = /^\[(\d{2}):(\d{2})\.(\d{2,3})\]\s*(.*)$/;
+  const parsed: { timeMs: number; text: string }[] = [];
+
+  for (const raw of lrc.split("\n")) {
+    const match = raw.trim().match(regex);
+    if (!match) continue;
+    const minutes = parseInt(match[1]);
+    const seconds = parseInt(match[2]);
+    const centiseconds =
+      match[3].length === 2 ? parseInt(match[3]) * 10 : parseInt(match[3]);
+    const timeMs = minutes * 60000 + seconds * 1000 + centiseconds;
+    const text = match[4].trim();
+    if (text.length > 0 && !isMetadataLine(text)) {
+      parsed.push({ timeMs, text });
+    }
+  }
+
+  const lyrics = parseLyrics(parsed.map((p) => p.text));
+  const timestamps: LRCTimestamp[] = parsed.map((p, i) => ({
+    lineIndex: i,
+    timeMs: p.timeMs,
+  }));
+
+  // Attach timeMs to lyrics lines
+  for (let i = 0; i < lyrics.length; i++) {
+    if (i < timestamps.length) {
+      (lyrics[i] as LyricLine & { timeMs?: number }).timeMs =
+        timestamps[i].timeMs;
+    }
+  }
+
+  return { lyrics, timestamps };
+}
